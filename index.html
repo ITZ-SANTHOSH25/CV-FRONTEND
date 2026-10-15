@@ -1183,7 +1183,7 @@ table.logs .t-type { font-weight: 600; color: var(--white); white-space: nowrap;
     <div class="alert-timer">Ringing &amp; vibrating · auto-stop in <span id="alertCountdown">60</span>s</div>
     <div class="btn-row" style="justify-content:center">
       <button class="btn primary" id="alertAck">Acknowledge Alert</button>
-      <button class="btn danger" id="alertDismiss">Decline Alert</button>
+      <button class="btn ghost" id="alertDismiss">Dismiss</button>
     </div>
   </div>
 </div>
@@ -1862,167 +1862,67 @@ CARVANTA.popupHTML = function (title, lines) {
     hideOverlay();
   }
 
-  async function sendEmergencyAlertAutomatically() {
-    if (!activeAlert || activeAlert.backendSent) return true;
-
-    const alertBeingSent = activeAlert;
-    const buttonRow = document.querySelector('#alertOverlay .btn-row');
-    const timerLabel = document.querySelector('#alertOverlay .alert-timer');
-
-    try {
-      const created = await apiJson(`${CARVANTA_API_URL}/api/alerts`, {
-        method: 'POST',
-        body: JSON.stringify({
-          reason: alertBeingSent.reason,
-          location: alertBeingSent.location,
-          createdAt: new Date().toISOString(),
-          recipients: alertBeingSent.contacts.map(c => ({
-            id: c.backendId ?? c.id,
-            name: c.name,
-            phone: c.phone,
-            relation: c.relation,
-            status: 'pending'
-          }))
-        })
-      });
-
-      const serverAlert = created.alert || created.data?.alert || created.data || created;
-      alertBeingSent.backendId = serverAlert.id ?? serverAlert._id ?? serverAlert.alertId ?? null;
-      alertBeingSent.backendSent = true;
-
-      if (alertBeingSent.backendId !== null &&
-          typeof localCreatedBackendAlertIds !== 'undefined') {
-        localCreatedBackendAlertIds.add(String(alertBeingSent.backendId));
-      }
-
-      if (Array.isArray(serverAlert.recipients)) {
-        alertBeingSent.contacts.forEach(c => {
-          const savedRecipient = serverAlert.recipients.find(
-            r => String(r.phone) === String(c.phone) ||
-                 String(r.name) === String(c.name)
-          );
-          if (savedRecipient) {
-            c.responseId = savedRecipient.id ?? savedRecipient._id;
-            c.status = savedRecipient.status || 'pending';
-          }
-        });
-      }
-
-      if (timerLabel) timerLabel.textContent = 'Alert sent · awaiting acknowledgement';
-      if (buttonRow) buttonRow.classList.remove('hidden');
-
-      renderAckList();
-      startRing();
-      CARVANTA.toast(
-        'Emergency alert sent',
-        `${alertBeingSent.contacts.length} emergency contact(s) notified after 60 seconds.`,
-        'alert'
-      );
-      CARVANTA.addLog({
-        type: 'Alert',
-        message: 'Emergency alert sent automatically',
-        detail: alertBeingSent.location,
-        status: 'ok'
-      });
-      fetchBackendActivityLogs();
-      return true;
-    } catch (err) {
-      if (timerLabel) timerLabel.textContent = 'Could not send alert · check backend connection';
-      if (buttonRow) buttonRow.classList.remove('hidden');
-      CARVANTA.toast(
-        'Emergency API failed',
-        `The alert could not be saved to the backend: ${err.message}`,
-        'warn'
-      );
-      CARVANTA.addLog({
-        type: 'Alert',
-        message: 'Automatic emergency alert failed',
-        detail: err.message,
-        status: 'fail'
-      });
-      return false;
-    }
-  }
-
   function showOverlay(reason, location) {
     document.getElementById('alertContact').textContent = reason;
     document.getElementById('alertLocation').textContent = '📍 ' + location;
-    const overlay = document.getElementById('alertOverlay');
-    const buttonRow = overlay.querySelector('.btn-row');
-    const timerLabel = overlay.querySelector('.alert-timer');
-
-    overlay.classList.add('show');
-    if (buttonRow) buttonRow.classList.add('hidden');
-
+    document.getElementById('alertOverlay').classList.add('show');
     let secs = 60;
-    if (timerLabel) {
-      timerLabel.innerHTML = 'Emergency alert will be sent in <span id="alertCountdown">60</span>s';
-    }
-
-    const countdownEl = document.getElementById('alertCountdown');
-    if (countdownEl) countdownEl.textContent = secs;
-
+    document.getElementById('alertCountdown').textContent = secs;
     if (countdownTimer) clearInterval(countdownTimer);
-    countdownTimer = setInterval(async () => {
+    countdownTimer = setInterval(() => {
       secs--;
       const el = document.getElementById('alertCountdown');
       if (el) el.textContent = Math.max(secs, 0);
-
       if (secs <= 0) {
-        clearInterval(countdownTimer);
-        countdownTimer = null;
-        if (timerLabel) timerLabel.textContent = 'Sending emergency alert…';
-        await sendEmergencyAlertAutomatically();
+        stopRing();
+        clearInterval(countdownTimer); countdownTimer = null;
+        if (activeAlert) activeAlert.contacts.forEach(c => { if (c.status !== 'acknowledged') c.status = 'delivered'; });
+        renderAckList();
+        hideOverlay();
+        CARVANTA.toast('Ring window ended', 'Auto-stopped after 60 seconds.', 'warn');
+        CARVANTA.addLog({ type: 'Alert', message: 'Alert ring window ended (60s)', detail: 'No acknowledgement received', status: 'warn' });
       }
     }, 1000);
   }
-
-  function hideOverlay() {
-    document.getElementById('alertOverlay').classList.remove('show');
-  }
+  function hideOverlay() { document.getElementById('alertOverlay').classList.remove('show'); }
 
   CARVANTA.triggerEmergency = async function (reason, location) {
     if (!contacts.length) {
       CARVANTA.toast('No contacts', 'Add at least one emergency contact first.', 'warn');
       return false;
     }
-
-    const loc = location || document.getElementById('d3Loc').value || 'Location unavailable';
-    if (countdownTimer) {
-      clearInterval(countdownTimer);
-      countdownTimer = null;
-    }
-    stopRing();
-
+    const loc = location || document.getElementById('d3Loc').value;
     activeAlert = {
       id: 'a' + Date.now(),
       reason: reason || 'A fall has been detected.',
       location: loc,
       start: Date.now(),
-      backendSent: false,
-      contacts: contacts.map(c => ({
-        id: c.id,
-        backendId: c.backendId ?? c.id,
-        name: c.name,
-        phone: c.phone,
-        relation: c.relation,
-        status: 'waiting'
-      }))
+      contacts: contacts.map(c => ({ id: c.id, name: c.name, phone: c.phone, relation: c.relation, status: 'ringing' }))
     };
-
+    try {
+      const created = await apiJson(`${CARVANTA_API_URL}/api/alerts`, { method: 'POST', body: JSON.stringify({ reason: activeAlert.reason, location: loc, createdAt: new Date(activeAlert.start).toISOString(), recipients: contacts.map(c => ({ id: c.backendId ?? c.id, name: c.name, phone: c.phone, relation: c.relation, status: 'pending' })) }) });
+      const serverAlert = created.alert || created.data?.alert || created.data || created;
+      activeAlert.backendId = serverAlert.id ?? serverAlert._id ?? serverAlert.alertId ?? null;
+      if (Array.isArray(serverAlert.recipients)) {
+        activeAlert.contacts.forEach(c => {
+          const savedRecipient = serverAlert.recipients.find(r => String(r.phone) === String(c.phone));
+          if (savedRecipient) { c.responseId = savedRecipient.id; c.status = savedRecipient.status || 'pending'; }
+        });
+      }
+    } catch (err) {
+      CARVANTA.toast('Emergency API failed', `Alert could not be confirmed by backend: ${err.message}`, 'warn');
+      activeAlert = null; return false;
+    }
     renderAckList();
     showOverlay(activeAlert.reason, loc);
-    CARVANTA.toast(
-      'Abnormal condition detected',
-      'A 60-second countdown has started. The emergency alert will be sent when it reaches zero.',
-      'warn'
-    );
-    CARVANTA.addLog({
-      type: 'Fall Detection',
-      message: 'Abnormal condition detected',
-      detail: 'Emergency alert countdown started (60 seconds)',
-      status: 'warn'
-    });
+    startRing();
+
+    CARVANTA.toast('Emergency alert sent', `${contacts.length} contacts alerted with location.`, 'alert');
+    setTimeout(() => {
+      if (!activeAlert) return;
+      activeAlert.contacts.forEach(c => { if (c.status === 'ringing') c.status = 'delivered'; });
+      renderAckList();
+    }, 2500);
     return true;
   };
 
@@ -2038,28 +1938,14 @@ CARVANTA.popupHTML = function (title, lines) {
     });
     document.getElementById('alertAck').addEventListener('click', async () => {
       if (!activeAlert) return hideOverlay();
-      if (!activeAlert.backendSent) {
-        CARVANTA.toast('Please wait', 'Acknowledgement buttons become active after the 60-second countdown and alert send.', 'warn');
-        return;
-      }
       const pending = activeAlert.contacts.find(c => !['acknowledged','declined'].includes(String(c.status).toLowerCase()));
       if (pending) await respondToAlert(pending.id, 'acknowledged');
-      if (!activeAlert || activeAlert.contacts.every(c => ['acknowledged','declined'].includes(String(c.status).toLowerCase()))) {
-        hideOverlay();
-      }
+      hideOverlay();
     });
-    document.getElementById('alertDismiss').addEventListener('click', async () => {
-      if (!activeAlert) return hideOverlay();
-      if (!activeAlert.backendSent) {
-        CARVANTA.toast('Please wait', 'You can decline after the 60-second countdown and alert send.', 'warn');
-        return;
-      }
-      const pending = activeAlert.contacts.find(c => !['acknowledged','declined'].includes(String(c.status).toLowerCase()));
-      if (pending) await respondToAlert(pending.id, 'declined');
-      if (!activeAlert || activeAlert.contacts.every(c => ['acknowledged','declined'].includes(String(c.status).toLowerCase()))) {
-        stopRing();
-        hideOverlay();
-      }
+    document.getElementById('alertDismiss').addEventListener('click', () => {
+      stopRing();
+      hideOverlay();
+      if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
     });
   };
 })();
@@ -2276,17 +2162,16 @@ CARVANTA.popupHTML = function (title, lines) {
     el('d5Monitor').textContent = 'Fall!';
     const impact = 3.2 + Math.random() * 0.8;
     addFall('high-confidence', impact);
-    CARVANTA.toast('Abnormal condition detected', 'Emergency alert will be sent in 60 seconds.', 'alert');
-    setTimeout(async () => {
-      if (CARVANTA.triggerEmergency) {
-        await CARVANTA.triggerEmergency(
-          'Fall detected by smartwatch — emergency assistance required.',
-          'Civic Center, Market St & 7th St · 37.7750, -122.4180'
-        );
-      }
+    CARVANTA.toast('Fall detected', 'Triggering emergency alert to contacts.', 'alert');
+    setTimeout(() => {
       el('d5Monitor').className = 'badge green';
       el('d5Monitor').textContent = 'Armed';
-    }, 60000);
+    }, 4000);
+    setTimeout(() => {
+      if (CARVANTA.triggerEmergency) {
+        CARVANTA.triggerEmergency('Fall detected by smartwatch — emergency assistance required.', 'Civic Center, Market St & 7th St · 37.7750, -122.4180');
+      }
+    }, 700);
   }
 
   function connect() {
@@ -2422,9 +2307,8 @@ function closeSidebar() {
 }
 
 // ===== Backend emergency alerts (ESP32 -> backend -> Dashboard 3) =====
-const CARVANTA_API_URL = 'https://cav-backend-3h6b.onrender.com';
+const CARVANTA_API_URL = 'https://car-backend-au68.onrender.com';
 let lastBackendAlertSignature = '';
-const localCreatedBackendAlertIds = new Set();
 const CARVANTA_ACK_STORAGE_KEY = 'carvanta_acknowledged_alerts_v1';
 let acknowledgedAlertKeys = new Set();
 try {
@@ -2468,10 +2352,9 @@ function ensureEmergencyOverlay() {
   overlay.setAttribute('aria-modal', 'true');
   overlay.setAttribute('aria-labelledby', 'carvantaEmergencyTitle');
   overlay.style.cssText = 'display:none;position:fixed;inset:0;z-index:99999;background:rgba(5,10,20,.94);color:#fff;align-items:center;justify-content:center;padding:22px;font-family:inherit;';
-  overlay.innerHTML = '<div style="width:min(100%,480px);background:#171d2a;border:2px solid #ff4d5a;border-radius:20px;padding:26px;text-align:center;box-shadow:0 0 40px rgba(255,50,70,.35)"><div style="font-size:48px;line-height:1.2">🚨</div><h2 id="carvantaEmergencyTitle" style="color:#ff626c;margin:12px 0">EMERGENCY ALERT</h2><p id="carvantaEmergencyReason" style="font-size:19px;font-weight:700"></p><p id="carvantaEmergencyLocation" style="opacity:.85"></p><p style="margin:18px 0">Choose how to respond to this emergency alert.</p><p id="carvantaEmergencyCountdown" role="status" aria-live="polite" style="font-size:15px;font-weight:800;color:#ffd166;margin:16px 0">Response required</p><div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap"><button id="carvantaAcknowledgeBtn" type="button" style="flex:1;min-width:140px;padding:15px;border:0;border-radius:12px;background:#16a36a;color:#fff;font-size:15px;font-weight:800;cursor:pointer">✓ ACKNOWLEDGE</button><button id="carvantaDeclineBtn" type="button" style="flex:1;min-width:140px;padding:15px;border:0;border-radius:12px;background:#b42332;color:#fff;font-size:15px;font-weight:800;cursor:pointer">✕ DECLINE</button></div></div>';
+  overlay.innerHTML = '<div style="width:min(100%,480px);background:#171d2a;border:2px solid #ff4d5a;border-radius:20px;padding:26px;text-align:center;box-shadow:0 0 40px rgba(255,50,70,.35)"><div style="font-size:48px;line-height:1.2">🚨</div><h2 id="carvantaEmergencyTitle" style="color:#ff626c;margin:12px 0">EMERGENCY ALERT</h2><p id="carvantaEmergencyReason" style="font-size:19px;font-weight:700"></p><p id="carvantaEmergencyLocation" style="opacity:.85"></p><p style="margin:18px 0">Alert ringing and vibration will continue while this page is active.</p><p id="carvantaEmergencyCountdown" role="status" aria-live="polite" style="font-size:18px;font-weight:800;color:#ffd166;margin:16px 0">Acknowledge available in 60s</p><button id="carvantaAcknowledgeBtn" type="button" disabled hidden style="width:100%;padding:15px;border:0;border-radius:12px;background:#16a36a;color:#fff;font-size:17px;font-weight:800;cursor:pointer;opacity:.5">✓ ACKNOWLEDGE</button></div>';
   document.body.appendChild(overlay);
-  overlay.querySelector('#carvantaAcknowledgeBtn').addEventListener('click', () => respondToBackendEmergencyAlert('acknowledged'));
-  overlay.querySelector('#carvantaDeclineBtn').addEventListener('click', () => respondToBackendEmergencyAlert('declined'));
+  overlay.querySelector('#carvantaAcknowledgeBtn').addEventListener('click', acknowledgeEmergencyAlert);
   return overlay;
 }
 
@@ -2523,16 +2406,35 @@ function showEmergencyAlert(alert, key) {
   overlay.querySelector('#carvantaEmergencyReason').textContent = reason;
   overlay.querySelector('#carvantaEmergencyLocation').textContent = '📍 ' + location;
   const acknowledgeButton = overlay.querySelector('#carvantaAcknowledgeBtn');
-  const declineButton = overlay.querySelector('#carvantaDeclineBtn');
   const countdownLabel = overlay.querySelector('#carvantaEmergencyCountdown');
-  emergencyAcknowledgeReady = true;
-  emergencyCountdownSeconds = 0;
-  acknowledgeButton.disabled = false;
-  declineButton.disabled = false;
+  emergencyAcknowledgeReady = false;
+  emergencyCountdownSeconds = 60;
+  acknowledgeButton.disabled = true;
+  acknowledgeButton.hidden = true;
+  acknowledgeButton.style.opacity = '.5';
   countdownLabel.hidden = false;
-  countdownLabel.textContent = 'Acknowledge or decline this alert';
+  countdownLabel.textContent = 'Acknowledge available in 60s';
   if (emergencyCountdownTimer) clearInterval(emergencyCountdownTimer);
-  emergencyCountdownTimer = null;
+  emergencyCountdownTimer = setInterval(() => {
+    if (activeEmergencyKey !== key) {
+      clearInterval(emergencyCountdownTimer);
+      emergencyCountdownTimer = null;
+      return;
+    }
+    emergencyCountdownSeconds = Math.max(0, emergencyCountdownSeconds - 1);
+    if (emergencyCountdownSeconds > 0) {
+      countdownLabel.textContent = `Acknowledge available in ${emergencyCountdownSeconds}s`;
+    } else {
+      clearInterval(emergencyCountdownTimer);
+      emergencyCountdownTimer = null;
+      emergencyAcknowledgeReady = true;
+      countdownLabel.hidden = true;
+      acknowledgeButton.hidden = false;
+      acknowledgeButton.disabled = false;
+      acknowledgeButton.style.opacity = '1';
+      acknowledgeButton.focus({ preventScroll: true });
+    }
+  }, 1000);
   overlay.style.display = 'flex';
   startEmergencySignals();
 
@@ -2550,15 +2452,16 @@ function showEmergencyAlert(alert, key) {
   if (CARVANTA.addLog) CARVANTA.addLog({type:'Emergency', message:'Emergency alert received: ' + reason, detail:location, status:'alert'});
 }
 
-async function respondToBackendEmergencyAlert(responseStatus) {
+async function acknowledgeEmergencyAlert() {
   if (!activeEmergencyKey || !emergencyAcknowledgeReady) return;
 
-  const responseKey = activeEmergencyKey;
+  const acknowledgedKey = activeEmergencyKey;
   const alert = activeEmergencyAlert || {};
   const alertId = alert.id ?? alert._id ?? alert.alertId;
-  const respondedAt = new Date().toISOString();
+  const acknowledgedAt = new Date().toISOString();
 
-  acknowledgedAlertKeys.add(responseKey);
+  // Stop this device immediately, then persist acknowledgement on the backend.
+  acknowledgedAlertKeys.add(acknowledgedKey);
   try { localStorage.setItem(CARVANTA_ACK_STORAGE_KEY, JSON.stringify([...acknowledgedAlertKeys])); } catch (_) {}
   activeEmergencyKey = null;
   activeEmergencyAlert = null;
@@ -2566,37 +2469,26 @@ async function respondToBackendEmergencyAlert(responseStatus) {
   if (emergencyCountdownTimer) clearInterval(emergencyCountdownTimer);
   emergencyCountdownTimer = null;
   stopEmergencySignals();
-
   const overlay = document.getElementById('carvantaEmergencyOverlay');
   if (overlay) overlay.style.display = 'none';
 
   let savedToBackend = false;
   if (alertId !== undefined && alertId !== null) {
     try {
-      const endpoint = responseStatus === 'acknowledged' ? 'acknowledge' : 'decline';
-      const response = await fetch(`${CARVANTA_API_URL}/api/alerts/${encodeURIComponent(alertId)}/${endpoint}`, {
+      const response = await fetch(`${CARVANTA_API_URL}/api/alerts/${encodeURIComponent(alertId)}/acknowledge`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          [responseStatus === 'acknowledged' ? 'acknowledgedAt' : 'declinedAt']: respondedAt,
-          acknowledgedBy: 'dashboard',
-          declinedBy: 'dashboard',
-          status: responseStatus
-        })
+        body: JSON.stringify({ acknowledgedAt, acknowledgedBy: 'recipient-device', status: 'acknowledged' })
       });
       savedToBackend = response.ok;
-      if (!response.ok) console.warn('Backend response returned HTTP', response.status);
-    } catch (error) {
-      console.warn('Could not save alert response to backend:', error);
-    }
+      if (!response.ok) console.warn('Backend acknowledgement returned HTTP', response.status);
+    } catch (error) { console.warn('Could not save acknowledgement to backend:', error); }
   }
 
-  const label = responseStatus === 'acknowledged' ? 'Acknowledged' : 'Declined';
-  CARVANTA.toast(
-    savedToBackend ? `Alert ${label.toLowerCase()}` : `${label} locally`,
-    savedToBackend ? `Your ${responseStatus} response was saved to the backend.` : 'The response was not confirmed by the backend.',
-    savedToBackend ? (responseStatus === 'acknowledged' ? 'ok' : 'warn') : 'warn'
-  );
+  if (!savedToBackend) console.warn('Device acknowledgement was not persisted to the backend activity log.');
+  CARVANTA.toast(savedToBackend ? 'Acknowledgement saved' : 'Alert acknowledged locally',
+    savedToBackend ? 'Ringing and vibration stopped. Status saved to backend logs.' : 'Ringing and vibration stopped, but the backend did not confirm the acknowledgement.',
+    savedToBackend ? 'ok' : 'warn');
   fetchBackendActivityLogs();
 }
 
@@ -2606,11 +2498,7 @@ async function fetchBackendEmergencyAlerts() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const result = await response.json();
     const alerts = getBackendAlertList(result);
-    const activeAlerts = alerts.filter(a =>
-      a &&
-      !['ended','resolved','acknowledged','cancelled'].includes(String(a.status || '').toLowerCase()) &&
-      !localCreatedBackendAlertIds.has(String(a.id ?? a._id ?? a.alertId ?? ''))
-    );
+    const activeAlerts = alerts.filter(a => a && !['ended','resolved','acknowledged','cancelled'].includes(String(a.status || '').toLowerCase()));
     if (!activeAlerts.length) return;
     const latest = activeAlerts[activeAlerts.length - 1];
     const key = getEmergencyKey(latest);

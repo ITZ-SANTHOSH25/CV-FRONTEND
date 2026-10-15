@@ -2563,6 +2563,44 @@ document.addEventListener('DOMContentLoaded', function () {
 
   setTimeout(() => CARVANTA.toast('System online', 'CARVANTA emergency monitoring is active.', 'ok'), 600);
 });
+async function checkEmergencyAlerts() {
+    try {
+        const response = await fetch(
+            `${API_BASE_URL}/api/alerts`,
+            { cache: "no-store" }
+        );
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        console.log("Emergency alerts received:", data);
+
+        const alerts = Array.isArray(data)
+            ? data
+            : Array.isArray(data.alerts)
+                ? data.alerts
+                : data.reason
+                    ? [data]
+                    : [];
+
+        const activeAlert = alerts.find(
+            alert => alert.status === "active"
+        );
+
+        if (activeAlert) {
+            console.log("Active emergency:", activeAlert);
+            // Connect this to your existing alert popup.
+        }
+    } catch (error) {
+        console.error("Alert loading failed:", error);
+    }
+}
+
+checkEmergencyAlerts();
+setInterval(checkEmergencyAlerts, 3000);
 </script>
 </body>
 </html>

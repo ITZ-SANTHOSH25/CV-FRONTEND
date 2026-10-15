@@ -2600,6 +2600,13 @@ async function checkEmergencyAlerts() {
 }
 
 checkEmergencyAlerts();
+  const activeAlert = alerts.find(
+    alert => alert.status === "active"
+);
+
+if (activeAlert) {
+    console.log("Active emergency:", activeAlert);
+}
 setInterval(checkEmergencyAlerts, 3000);
 </script>
 </body>
